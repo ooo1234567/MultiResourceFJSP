@@ -1,0 +1,307 @@
+using System;
+
+using System.Collections.Generic;
+
+using System.Linq;
+
+using Google.OrTools.Sat;
+
+
+
+public class JobshopFt06Sat
+
+{
+    public int solutioncount = 0;
+  static void Main()
+  { 
+        /* List Of Jobs : 
+            * Each job is made of a list of tasks.
+            * Each tasks have alternatives.
+            * Each alternative is made of : duration (int) , list of alternate HR and machines (List<int>) 
+        */ 
+        ///// DATA SETS ///
+        string DataPython = "[[[[3, (0, 1)],[1, (1, 2)],[5, (2, 3)]],[[2, (3, 4)], [4, (1, 2)], [6, (2, 3)]], [[2, (0, 1)], [3, (1, 2)], [1, (2, 3)]]],[[[2, (0, 1)], [3, (1, 2)], [4, (2, 3)]], [[1, (0, 1)], [5, (1, 2)], [4, (2, 3)]], [[2, (0, 1)], [1, (1, 2)], [4, (2, 3)]]],[[[2, (0, 1)], [1, (1, 2)], [4, (2, 3)]], [[2, (0, 1)], [3, (1, 2)], [4, (2)]], [[3, (0, 1)]]]]";
+         
+        Console.WriteLine(DataPython);
+
+        var JobList = new List<List<List<Tuple<int, List<int>>>>>();
+
+
+        //var SetJobs = new Cs_MRFJSP.Controler.SetListOfJobs();
+        //SetJobs.In(DataPython, JobList);
+
+        var SetJobs2 = new JobshopFt06Sat();
+        SetJobs2.SetJobsFrom(DataPython, JobList);
+
+
+        var num_jobs = JobList.Count();
+        var all_jobs = Enumerable.Range(0, num_jobs);
+
+        var num_machines = 7;
+        var all_machines = Enumerable.Range(0, num_machines);
+
+
+        // Creates the model.
+        CpModel model = new CpModel();
+
+        //Creates the horizon
+        var horizon = 0;
+        foreach (var Job in JobList)
+        {
+            foreach (var task in Job)
+            {
+                var max_task_duration = 0;
+
+                foreach (var alternative in task)
+                { 
+                    max_task_duration = Math.Max(max_task_duration,alternative.Item1);
+                }
+
+                horizon += max_task_duration;
+            }
+        }
+
+        Console.WriteLine(horizon);
+
+        //GoogleOr Variables
+
+        var intervals_per_resource = new Dictionary <int,List<IntervalVar>>();
+        var starts = new Dictionary<string, LinearExpr>();
+        var presences = new Dictionary<string, LinearExpr>();
+        var job_ends = new List<IntVar>();
+
+        //Scan the jobs and create relevant variables and intervals
+
+        int CountJob = 0;
+        int CountTask = 0;
+        int CountAlt = 0;
+
+        foreach (var Job in JobList)
+        {
+            IntVar previous_end = null;
+
+            CountJob += 1;
+            CountTask = 0;
+
+            foreach (var task in Job)
+            { 
+                CountTask += 1;
+                CountAlt = 0;
+
+                var alt_min_duration = task.Min(x => x.Item1);
+                var alt_max_duration = task.Max(x => x.Item1);
+
+                string suffix_name = "Job" + CountJob.ToString() + "_" + "Task" + CountTask.ToString();
+
+                //Tasks OR-Variables 
+                var start = model.NewIntVar(0, horizon, "start" + suffix_name);
+                var duration = model.NewIntVar(alt_min_duration, alt_max_duration, "duration" + suffix_name);
+                var end = model.NewIntVar(0, horizon, "end" + suffix_name);
+                var interval = model.NewIntervalVar(start, duration, end,"interval" + suffix_name);
+                
+                //Store tasks starts for the solution
+
+                starts[CountJob.ToString() + "-" + CountTask.ToString()] = start;
+                 
+                //Constraints precedence : 
+                if (previous_end != null)
+                {
+                    model.Add(start >= previous_end);
+                }
+                previous_end = end;
+
+                //Alternative OR-Variables
+                if (task.Count() > 0) // TODO : PEUT-ETRE RETIRE
+                {
+                    var alt_presenceList = new List<LinearExpr>();
+
+                    foreach (var alternatives in task)
+                    {
+                        CountAlt += 1;
+
+                        string alt_suffix = suffix_name + "_" + "Alt" + CountAlt.ToString();
+
+                        var alt_presence = model.NewBoolVar("Presence_" + alt_suffix); 
+                        var alt_start = model.NewIntVar(0,horizon,"Alt_start_"+ alt_suffix) ; 
+                        var alt_duration = alternatives.Item1; 
+                        var alt_end = model.NewIntVar(0, horizon, "Alt_end_" + alt_suffix); 
+                        var alt_interval = model.NewOptionalIntervalVar(alt_start, alt_duration, alt_end, alt_presence, "Interval_" + alt_suffix);
+
+                        alt_presenceList.Add(alt_presence);
+
+                        // Link the master variables with the local ones.
+
+                        model.Add(start == alt_start).OnlyEnforceIf(alt_presence);
+                        model.Add(duration == alt_duration).OnlyEnforceIf(alt_presence);
+                        model.Add(end == alt_end).OnlyEnforceIf(alt_presence);
+
+                        // Store the presences for the solution.
+
+                        if (task.Count() >1)
+                        {
+                            presences[CountJob.ToString() + "-" + CountTask.ToString() + "-" + CountAlt] = alt_presence;
+                        }
+                        else
+                        {
+                            presences[CountJob.ToString() + "-" + CountTask.ToString() + "-" + CountAlt] = model.NewConstant(1);
+
+                        }
+
+
+                        // Add the local interval to the right machine.
+
+                        if (alternatives.Item2.Count() > 0) // TODO : PEUT-ETRE RETIRE
+                        {
+                            foreach (var resource in alternatives.Item2)
+                            {
+                                try  
+                                {
+                                    intervals_per_resource.Add(resource, new List<IntervalVar>());
+                                }
+
+                                catch(Exception ex)
+                                {
+
+                                }
+                                intervals_per_resource[resource].Add(alt_interval);                                
+                            }
+                        } 
+                    }
+
+                    // Select exactly one presence variable. 
+
+                    model.Add(LinearExpr.Sum(alt_presenceList) == 1);
+                    alt_presenceList = null;
+                } 
+            }
+
+            job_ends.Add(previous_end);
+
+        }
+
+        // Create machines constriants
+
+        foreach (var resource in intervals_per_resource)
+        {
+            if (resource.Value.Count() > 1)
+            {
+                model.AddNoOverlap(resource.Value);
+            }
+        } 
+
+        // Generate objective function
+                
+        var makespan = model.NewIntVar(0, horizon, "makespan");
+        model.AddMaxEquality(makespan, job_ends);
+        model.Minimize(makespan);
+
+        // Solve model
+        CpSolver solver = new CpSolver();
+
+        // Set time limit
+        solver.StringParameters = "max_time_in_seconds:30.0";
+
+        // Set callbacks
+        //solver.SolveWithSolutionCallback(model, SolutionPrinter); //TODO : ImplementCallBackLog
+
+        solver.Solve(model);
+
+        CountJob = 0;
+        CountTask = 0;
+        CountAlt = 0;
+
+        Console.WriteLine("Objective value: " + solver.Response);
+        Console.WriteLine("Solution: " + solver.Response.Status);
+
+        Console.WriteLine("Objective value: " + solver.ObjectiveValue);
+
+        foreach (var Job in JobList)
+        { 
+
+            CountJob += 1;
+            CountTask = 0;
+
+            foreach (var task in Job)
+            {
+                CountTask += 1;
+                CountAlt = 0; 
+                 
+ 
+                //Alternative OR-Variables 
+                foreach (var alternatives in task)
+                {
+                    CountAlt += 1;
+
+                    if (solver.Value(presences[CountJob.ToString() + "-" + CountTask.ToString() + "-" + CountAlt]) == 1)
+                    {
+                        Console.WriteLine("Job" + CountJob + "-task" + CountTask + "-Alt" + CountAlt);
+                    }
+
+                }
+
+            }  
+        } 
+
+        Console.ReadLine();
+    }
+
+    public void SetJobsFrom(string InputString, List<List<List<Tuple<int, List<int>>>>> JobList)
+    {
+        var InputStringSplitList = InputString.Split("[");
+        var InformationDictionary = new Dictionary<int, string>();
+
+        for (int i = 0; i < InputStringSplitList.Count(); i++)
+        {
+            InformationDictionary[i] = InputStringSplitList[i];
+        }
+
+        foreach (var SplitString in InformationDictionary)
+        {
+
+            if (SplitString.Value == "" && InformationDictionary.Where(x => x.Key == SplitString.Key + 1).First().Value == "" && InformationDictionary.Where(x => x.Key == SplitString.Key + 2).First().Value == "")
+            {
+            }
+
+            else if (SplitString.Value == "" && InformationDictionary.Where(x => x.Key == SplitString.Key + 1).First().Value == "")
+            {
+                NewJob = new List<List<Tuple<int, List<int>>>>();
+                JobList.Add(NewJob);
+
+            }
+
+            else if (SplitString.Value == "")
+            {
+                NewTaskOptions = new List<Tuple<int, List<int>>>();
+                NewJob.Add(NewTaskOptions);
+            }
+            else
+            {
+                var number = GetNumbers(SplitString.Value);
+
+                var ResourceList = new List<int>();
+
+                ResourceList.Add(int.Parse(number.Substring(1, 1)));
+                try
+                {
+                    ResourceList.Add(int.Parse(number.Substring(2, 1)));
+                }
+                catch (Exception ex)
+                {
+
+                }
+
+                NewTaskOptions.Add(Tuple.Create(int.Parse(number.Substring(0, 1)), ResourceList));
+            }
+        }
+
+    }
+    private static string GetNumbers(string input)
+    {
+        return new string(input.Where(c => char.IsDigit(c)).ToArray());
+    }
+
+    public List<List<Tuple<int, List<int>>>> NewJob;
+    public List<Tuple<int, List<int>>> NewTaskOptions;
+
+
+}
