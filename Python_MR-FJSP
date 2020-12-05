@@ -385,7 +385,7 @@ def flexible_jobshop():
 
     for job_id in all_jobs:
 
-        print('Job %i:' % job_id + 1)
+        print('Job %i:' % (job_id + 1))
 
         for task_id in range(len(jobs[job_id])):
 
